@@ -1,0 +1,27 @@
+module quantum_graph where
+
+canonicalizeFloat : [64] -> [64]
+canonicalizeFloat v =
+    if isNaN_ieee754 v then 0x7FF8000000000000
+     | isZero_ieee754 v then 0x0000000000000000
+    else v
+
+isNaN_ieee754 : [64] -> Bit
+isNaN_ieee754 v = exponent == 0x7FF && mantissa != 0
+  where
+    exponent = (v >> 52) & 0x7FF
+    mantissa = v & 0x000FFFFFFFFFFFFF
+
+isZero_ieee754 : [64] -> Bit
+isZero_ieee754 v = (v & 0x7FFFFFFFFFFFFFFF) == 0
+
+writeU64Le : [64] -> [8][8]
+writeU64Le v = [ drop (v >> i) | i <- [0, 8 .. 56] ]
+
+addDigestSpec : [32][8] -> [32][8] -> [32][8]
+addDigestSpec acc d = reverse (split (a + b))
+  where
+    a : [256]
+    a = join (reverse acc)
+    b : [256]
+    b = join (reverse d)

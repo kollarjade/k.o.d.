@@ -1,0 +1,1081 @@
+define MAX_TENSOR_REFCOUNT 2147483647
+define TENSOR_EPSILON 1
+define MAX_TENSOR_DIMENSION 8
+define MAX_TENSOR_SIZE 1000000000
+define MIN_TENSOR_DIMENSION 1
+define CACHE_LINE_SIZE 128
+
+field tensor_data: Seq[Int]
+field tensor_refcount: Int
+field tensor_shape: Seq[Int]
+field tensor_ndims: Int
+field tensor_cow_state: Int
+field tensor_mutex_locked: Bool
+field tensor_mutex_owner: Int
+
+function shapeSizeImpl(s: Seq[Int], idx: Int): Int
+    requires idx >= 0
+    requires idx <= |s|
+    requires forall i: Int :: idx <= i && i < |s| ==> s[i] > 0
+    ensures result >= 1
+    decreases |s| - idx
+{
+    idx >= |s| ? 1 : s[idx] * shapeSizeImpl(s, idx + 1)
+}
+
+function shapeSize(s: Seq[Int]): Int
+    requires forall i: Int :: 0 <= i && i < |s| ==> s[i] > 0
+    ensures result >= 1
+{
+    shapeSizeImpl(s, 0)
+}
+
+function isValidShape(s: Seq[Int]): Bool
+{
+    |s| >= 0 && |s| <= MAX_TENSOR_DIMENSION &&
+    (forall i: Int :: 0 <= i && i < |s| ==> s[i] >= MIN_TENSOR_DIMENSION && s[i] <= MAX_TENSOR_SIZE)
+}
+
+function shapesEqual(s1: Seq[Int], s2: Seq[Int]): Bool
+{
+    |s1| == |s2| &&
+    (forall i: Int :: 0 <= i && i < |s1| ==> s1[i] == s2[i])
+}
+
+define COW_EXCLUSIVE 0
+define COW_SHARED 1
+
+predicate Tensor(t: Ref) {
+    acc(t.tensor_data) &&
+    acc(t.tensor_refcount) &&
+    acc(t.tensor_shape) &&
+    acc(t.tensor_ndims) &&
+    acc(t.tensor_cow_state) &&
+    acc(t.tensor_mutex_locked) &&
+    acc(t.tensor_mutex_owner) &&
+    t.tensor_refcount > 0 &&
+    t.tensor_refcount <= MAX_TENSOR_REFCOUNT &&
+    t.tensor_ndims == |t.tensor_shape| &&
+    t.tensor_ndims >= 0 &&
+    t.tensor_ndims <= MAX_TENSOR_DIMENSION &&
+    isValidShape(t.tensor_shape) &&
+    |t.tensor_data| == shapeSize(t.tensor_shape) &&
+    (t.tensor_cow_state == COW_EXCLUSIVE || t.tensor_cow_state == COW_SHARED)
+}
+
+predicate TensorNonNegative(t: Ref) {
+    acc(t.tensor_data) &&
+    acc(t.tensor_refcount) &&
+    acc(t.tensor_shape) &&
+    acc(t.tensor_ndims) &&
+    acc(t.tensor_cow_state) &&
+    acc(t.tensor_mutex_locked) &&
+    acc(t.tensor_mutex_owner) &&
+    t.tensor_refcount > 0 &&
+    t.tensor_refcount <= MAX_TENSOR_REFCOUNT &&
+    t.tensor_ndims == |t.tensor_shape| &&
+    t.tensor_ndims >= 0 &&
+    t.tensor_ndims <= MAX_TENSOR_DIMENSION &&
+    isValidShape(t.tensor_shape) &&
+    |t.tensor_data| == shapeSize(t.tensor_shape) &&
+    (forall i: Int :: 0 <= i && i < |t.tensor_data| ==> t.tensor_data[i] >= 0) &&
+    (t.tensor_cow_state == COW_EXCLUSIVE || t.tensor_cow_state == COW_SHARED)
+}
+
+method tensor_create(shape_input: Seq[Int]) returns (t: Ref)
+    requires isValidShape(shape_input)
+    requires |shape_input| > 0
+    ensures TensorNonNegative(t)
+    ensures unfolding TensorNonNegative(t) in t.tensor_shape == shape_input
+    ensures unfolding TensorNonNegative(t) in t.tensor_refcount == 1
+    ensures unfolding TensorNonNegative(t) in t.tensor_cow_state == COW_EXCLUSIVE
+    ensures unfolding TensorNonNegative(t) in t.tensor_mutex_locked == false
+    ensures unfolding TensorNonNegative(t) in forall i: Int :: 0 <= i && i < |t.tensor_data| ==> t.tensor_data[i] == 0
+{
+    t := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims, tensor_cow_state, tensor_mutex_locked, tensor_mutex_owner)
+    t.tensor_shape := shape_input
+    t.tensor_refcount := 1
+    t.tensor_ndims := |shape_input|
+    t.tensor_cow_state := COW_EXCLUSIVE
+    t.tensor_mutex_locked := false
+    t.tensor_mutex_owner := 0
+
+    var size: Int := shapeSize(shape_input)
+    t.tensor_data := Seq[Int]()
+
+    var i: Int := 0
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |t.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < i ==> t.tensor_data[j] == 0
+    {
+        t.tensor_data := t.tensor_data ++ Seq(0)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+}
+
+method tensor_view(t: Ref) returns (v: Ref)
+    requires TensorNonNegative(t)
+    requires unfolding TensorNonNegative(t) in t.tensor_refcount < MAX_TENSOR_REFCOUNT
+    ensures TensorNonNegative(t)
+    ensures unfolding TensorNonNegative(t) in t.tensor_refcount == old(unfolding TensorNonNegative(t) in t.tensor_refcount) + 1
+    ensures unfolding TensorNonNegative(t) in t.tensor_cow_state == COW_SHARED
+{
+    unfold TensorNonNegative(t)
+    t.tensor_refcount := t.tensor_refcount + 1
+    t.tensor_cow_state := COW_SHARED
+    v := t
+    fold TensorNonNegative(t)
+}
+
+function copySeqFn(s: Seq[Int]): Seq[Int]
+    ensures |result| == |s|
+    ensures forall i: Int :: 0 <= i && i < |s| ==> result[i] == s[i]
+{
+    s
+}
+
+method copySeqMethod(original: Seq[Int]) returns (fresh_copy: Seq[Int])
+    ensures |fresh_copy| == |original|
+    ensures forall i: Int :: 0 <= i && i < |original| ==> fresh_copy[i] == original[i]
+{
+    fresh_copy := Seq[Int]()
+    var i: Int := 0
+    while (i < |original|)
+        invariant 0 <= i && i <= |original|
+        invariant |fresh_copy| == i
+        invariant forall j: Int :: 0 <= j && j < i ==> fresh_copy[j] == original[j]
+    {
+        fresh_copy := fresh_copy ++ Seq(original[i])
+        i := i + 1
+    }
+}
+
+method tensor_ensure_writable(t: Ref) returns (copied: Bool)
+    requires TensorNonNegative(t)
+    ensures TensorNonNegative(t)
+    ensures unfolding TensorNonNegative(t) in t.tensor_cow_state == COW_EXCLUSIVE
+    ensures copied ==> unfolding TensorNonNegative(t) in t.tensor_refcount == 1
+    ensures copied ==> unfolding TensorNonNegative(t) in t.tensor_mutex_locked == false
+    ensures copied ==> unfolding TensorNonNegative(t) in |t.tensor_data| == |old(unfolding TensorNonNegative(t) in t.tensor_data)|
+    ensures copied ==> unfolding TensorNonNegative(t) in forall i: Int :: 0 <= i && i < |t.tensor_data| ==> t.tensor_data[i] == old(unfolding TensorNonNegative(t) in t.tensor_data)[i]
+{
+    unfold TensorNonNegative(t)
+    if (t.tensor_cow_state == COW_EXCLUSIVE) {
+        copied := false
+    } else {
+        var old_data: Seq[Int] := t.tensor_data
+        var fresh_data: Seq[Int]
+        fresh_data := copySeqMethod(old_data)
+        t.tensor_data := fresh_data
+        t.tensor_refcount := 1
+        t.tensor_cow_state := COW_EXCLUSIVE
+        t.tensor_mutex_locked := false
+        t.tensor_mutex_owner := 0
+        copied := true
+    }
+    fold TensorNonNegative(t)
+}
+
+method tensor_create_scalar(value: Int) returns (t: Ref)
+    requires value >= 0
+    ensures TensorNonNegative(t)
+    ensures unfolding TensorNonNegative(t) in |t.tensor_shape| == 1
+    ensures unfolding TensorNonNegative(t) in t.tensor_refcount == 1
+    ensures unfolding TensorNonNegative(t) in t.tensor_cow_state == COW_EXCLUSIVE
+    ensures unfolding TensorNonNegative(t) in t.tensor_mutex_locked == false
+    ensures unfolding TensorNonNegative(t) in |t.tensor_data| == 1
+    ensures unfolding TensorNonNegative(t) in t.tensor_data[0] == value
+{
+    t := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims, tensor_cow_state, tensor_mutex_locked, tensor_mutex_owner)
+    t.tensor_shape := Seq(1)
+    t.tensor_refcount := 1
+    t.tensor_ndims := 1
+    t.tensor_cow_state := COW_EXCLUSIVE
+    t.tensor_mutex_locked := false
+    t.tensor_mutex_owner := 0
+    t.tensor_data := Seq(value)
+
+    fold TensorNonNegative(t)
+}
+
+method tensor_retain(t: Ref)
+    requires TensorNonNegative(t)
+    requires unfolding TensorNonNegative(t) in t.tensor_refcount < MAX_TENSOR_REFCOUNT
+    ensures TensorNonNegative(t)
+    ensures unfolding TensorNonNegative(t) in t.tensor_refcount == old(unfolding TensorNonNegative(t) in t.tensor_refcount) + 1
+    ensures unfolding TensorNonNegative(t) in t.tensor_cow_state == COW_SHARED
+{
+    unfold TensorNonNegative(t)
+    t.tensor_refcount := t.tensor_refcount + 1
+    t.tensor_cow_state := COW_SHARED
+    fold TensorNonNegative(t)
+}
+
+method tensor_release(t: Ref) returns (should_free: Bool)
+    requires TensorNonNegative(t)
+    ensures should_free ==> old(unfolding TensorNonNegative(t) in t.tensor_refcount) == 1
+    ensures !should_free ==> TensorNonNegative(t)
+    ensures !should_free ==> unfolding TensorNonNegative(t) in t.tensor_refcount == old(unfolding TensorNonNegative(t) in t.tensor_refcount) - 1
+{
+    unfold TensorNonNegative(t)
+
+    if (t.tensor_refcount == 1) {
+        should_free := true
+    } else {
+        t.tensor_refcount := t.tensor_refcount - 1
+        should_free := false
+        fold TensorNonNegative(t)
+    }
+}
+
+method tensor_fill(t: Ref, value: Int)
+    requires TensorNonNegative(t)
+    requires value >= 0
+    ensures TensorNonNegative(t)
+    ensures unfolding TensorNonNegative(t) in forall i: Int :: 0 <= i && i < |t.tensor_data| ==> t.tensor_data[i] == value
+{
+    unfold TensorNonNegative(t)
+
+    var size: Int := |t.tensor_data|
+    t.tensor_data := Seq[Int]()
+
+    var i: Int := 0
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |t.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < i ==> t.tensor_data[j] == value
+    {
+        t.tensor_data := t.tensor_data ++ Seq(value)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+}
+
+method tensor_get(t: Ref, index: Int) returns (val: Int)
+    requires TensorNonNegative(t)
+    requires index >= 0
+    requires index < unfolding TensorNonNegative(t) in |t.tensor_data|
+    ensures TensorNonNegative(t)
+    ensures val >= 0
+    ensures val == old(unfolding TensorNonNegative(t) in t.tensor_data[index])
+{
+    unfold TensorNonNegative(t)
+    val := t.tensor_data[index]
+    fold TensorNonNegative(t)
+}
+
+method tensor_set(t: Ref, index: Int, value: Int)
+    requires TensorNonNegative(t)
+    requires index >= 0
+    requires index < unfolding TensorNonNegative(t) in |t.tensor_data|
+    requires value >= 0
+    ensures TensorNonNegative(t)
+    ensures unfolding TensorNonNegative(t) in t.tensor_data[index] == value
+    ensures unfolding TensorNonNegative(t) in forall i: Int :: (0 <= i && i < |t.tensor_data| && i != index) ==>
+        t.tensor_data[i] == old(unfolding TensorNonNegative(t) in t.tensor_data[i])
+{
+    unfold TensorNonNegative(t)
+    t.tensor_data := t.tensor_data[index := value]
+    fold TensorNonNegative(t)
+}
+
+method tensor_add(t1: Ref, t2: Ref) returns (result: Ref)
+    requires TensorNonNegative(t1)
+    requires TensorNonNegative(t2)
+    requires unfolding TensorNonNegative(t1) in unfolding TensorNonNegative(t2) in shapesEqual(t1.tensor_shape, t2.tensor_shape)
+    ensures TensorNonNegative(t1)
+    ensures TensorNonNegative(t2)
+    ensures TensorNonNegative(result)
+    ensures unfolding TensorNonNegative(result) in forall i: Int :: 0 <= i && i < |result.tensor_data| ==>
+        result.tensor_data[i] == old(unfolding TensorNonNegative(t1) in t1.tensor_data[i]) + old(unfolding TensorNonNegative(t2) in t2.tensor_data[i])
+{
+    unfold TensorNonNegative(t1)
+    unfold TensorNonNegative(t2)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t1.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t1.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    var size: Int := |t1.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < size ==> t1.tensor_data[j] >= 0
+        invariant forall j: Int :: 0 <= j && j < size ==> t2.tensor_data[j] >= 0
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] == t1.tensor_data[j] + t2.tensor_data[j]
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= 0
+    {
+        var sum: Int := t1.tensor_data[i] + t2.tensor_data[i]
+        result.tensor_data := result.tensor_data ++ Seq(sum)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t1)
+    fold TensorNonNegative(t2)
+    fold TensorNonNegative(result)
+}
+
+method tensor_sub(t1: Ref, t2: Ref) returns (result: Ref)
+    requires TensorNonNegative(t1)
+    requires TensorNonNegative(t2)
+    requires unfolding TensorNonNegative(t1) in unfolding TensorNonNegative(t2) in shapesEqual(t1.tensor_shape, t2.tensor_shape)
+    ensures TensorNonNegative(t1)
+    ensures TensorNonNegative(t2)
+    ensures TensorNonNegative(result)
+{
+    unfold TensorNonNegative(t1)
+    unfold TensorNonNegative(t2)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t1.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t1.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    var size: Int := |t1.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= 0
+    {
+        var diff: Int := t1.tensor_data[i] - t2.tensor_data[i]
+        if (diff < 0) {
+            diff := 0
+        }
+        result.tensor_data := result.tensor_data ++ Seq(diff)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t1)
+    fold TensorNonNegative(t2)
+    fold TensorNonNegative(result)
+}
+
+method tensor_mul(t1: Ref, t2: Ref) returns (result: Ref)
+    requires TensorNonNegative(t1)
+    requires TensorNonNegative(t2)
+    requires unfolding TensorNonNegative(t1) in unfolding TensorNonNegative(t2) in shapesEqual(t1.tensor_shape, t2.tensor_shape)
+    ensures TensorNonNegative(t1)
+    ensures TensorNonNegative(t2)
+    ensures TensorNonNegative(result)
+    ensures unfolding TensorNonNegative(result) in forall i: Int :: 0 <= i && i < |result.tensor_data| ==>
+        result.tensor_data[i] == old(unfolding TensorNonNegative(t1) in t1.tensor_data[i]) * old(unfolding TensorNonNegative(t2) in t2.tensor_data[i])
+{
+    unfold TensorNonNegative(t1)
+    unfold TensorNonNegative(t2)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t1.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t1.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    var size: Int := |t1.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < size ==> t1.tensor_data[j] >= 0
+        invariant forall j: Int :: 0 <= j && j < size ==> t2.tensor_data[j] >= 0
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] == t1.tensor_data[j] * t2.tensor_data[j]
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= 0
+    {
+        var a: Int := t1.tensor_data[i]
+        var b: Int := t2.tensor_data[i]
+        var product: Int := a * b
+        result.tensor_data := result.tensor_data ++ Seq(product)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t1)
+    fold TensorNonNegative(t2)
+    fold TensorNonNegative(result)
+}
+
+method tensor_div(t1: Ref, t2: Ref, epsilon: Int) returns (result: Ref)
+    requires TensorNonNegative(t1)
+    requires TensorNonNegative(t2)
+    requires epsilon > 0
+    requires unfolding TensorNonNegative(t1) in unfolding TensorNonNegative(t2) in shapesEqual(t1.tensor_shape, t2.tensor_shape)
+    ensures TensorNonNegative(t1)
+    ensures TensorNonNegative(t2)
+    ensures TensorNonNegative(result)
+{
+    unfold TensorNonNegative(t1)
+    unfold TensorNonNegative(t2)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t1.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t1.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    var size: Int := |t1.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= 0
+    {
+        var divisor: Int := t2.tensor_data[i] + epsilon
+        var quotient: Int := t1.tensor_data[i] / divisor
+        if (quotient < 0) {
+            quotient := 0
+        }
+        result.tensor_data := result.tensor_data ++ Seq(quotient)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t1)
+    fold TensorNonNegative(t2)
+    fold TensorNonNegative(result)
+}
+
+method tensor_scalar_add(t: Ref, scalar: Int) returns (result: Ref)
+    requires TensorNonNegative(t)
+    requires scalar >= 0
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(result)
+    ensures unfolding TensorNonNegative(result) in forall i: Int :: 0 <= i && i < |result.tensor_data| ==>
+        result.tensor_data[i] == old(unfolding TensorNonNegative(t) in t.tensor_data[i]) + scalar
+{
+    unfold TensorNonNegative(t)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] == t.tensor_data[j] + scalar
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= 0
+    {
+        result.tensor_data := result.tensor_data ++ Seq(t.tensor_data[i] + scalar)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(result)
+}
+
+method tensor_scalar_mul(t: Ref, scalar: Int) returns (result: Ref)
+    requires TensorNonNegative(t)
+    requires scalar >= 0
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(result)
+    ensures unfolding TensorNonNegative(result) in forall i: Int :: 0 <= i && i < |result.tensor_data| ==>
+        result.tensor_data[i] == old(unfolding TensorNonNegative(t) in t.tensor_data[i]) * scalar
+{
+    unfold TensorNonNegative(t)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant scalar >= 0
+        invariant forall j: Int :: 0 <= j && j < size ==> t.tensor_data[j] >= 0
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] == t.tensor_data[j] * scalar
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= 0
+    {
+        var val: Int := t.tensor_data[i]
+        var product: Int := val * scalar
+        result.tensor_data := result.tensor_data ++ Seq(product)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(result)
+}
+
+method tensor_sum(t: Ref) returns (sum: Int)
+    requires TensorNonNegative(t)
+    ensures TensorNonNegative(t)
+    ensures sum >= 0
+{
+    unfold TensorNonNegative(t)
+
+    sum := 0
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant sum >= 0
+    {
+        sum := sum + t.tensor_data[i]
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+}
+
+method tensor_max(t: Ref) returns (max_val: Int)
+    requires TensorNonNegative(t)
+    requires unfolding TensorNonNegative(t) in |t.tensor_data| > 0
+    ensures TensorNonNegative(t)
+    ensures max_val >= 0
+{
+    unfold TensorNonNegative(t)
+
+    max_val := 0
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant max_val >= 0
+    {
+        if (t.tensor_data[i] > max_val) {
+            max_val := t.tensor_data[i]
+        }
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+}
+
+method tensor_min(t: Ref) returns (min_val: Int)
+    requires TensorNonNegative(t)
+    requires unfolding TensorNonNegative(t) in |t.tensor_data| > 0
+    ensures TensorNonNegative(t)
+    ensures min_val >= 0
+{
+    unfold TensorNonNegative(t)
+
+    min_val := MAX_TENSOR_SIZE
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant min_val >= 0
+    {
+        if (t.tensor_data[i] < min_val) {
+            min_val := t.tensor_data[i]
+        }
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+}
+
+method tensor_mean(t: Ref) returns (mean: Int)
+    requires TensorNonNegative(t)
+    requires unfolding TensorNonNegative(t) in |t.tensor_data| > 0
+    ensures TensorNonNegative(t)
+    ensures mean >= 0
+{
+    unfold TensorNonNegative(t)
+
+    var sum: Int := 0
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant sum >= 0
+    {
+        sum := sum + t.tensor_data[i]
+        i := i + 1
+    }
+
+    mean := sum / size
+
+    fold TensorNonNegative(t)
+}
+
+method tensor_copy(t: Ref) returns (result: Ref)
+    requires TensorNonNegative(t)
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(result)
+    ensures unfolding TensorNonNegative(result) in result.tensor_data == old(unfolding TensorNonNegative(t) in t.tensor_data)
+    ensures unfolding TensorNonNegative(result) in result.tensor_refcount == 1
+{
+    unfold TensorNonNegative(t)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t.tensor_ndims
+    result.tensor_data := t.tensor_data
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(result)
+}
+
+function reshapeCompatible(old_shape: Seq[Int], new_shape: Seq[Int]): Bool
+    requires isValidShape(old_shape)
+    requires isValidShape(new_shape)
+{
+    shapeSize(old_shape) == shapeSize(new_shape)
+}
+
+method tensor_reshape(t: Ref, new_shape: Seq[Int]) returns (result: Ref)
+    requires TensorNonNegative(t)
+    requires isValidShape(new_shape)
+    requires |new_shape| > 0
+    requires unfolding TensorNonNegative(t) in shapeSize(t.tensor_shape) == shapeSize(new_shape)
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(result)
+    ensures unfolding TensorNonNegative(result) in result.tensor_data == old(unfolding TensorNonNegative(t) in t.tensor_data)
+{
+    unfold TensorNonNegative(t)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := new_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := |new_shape|
+    result.tensor_data := t.tensor_data
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(result)
+}
+
+method tensor_relu(t: Ref) returns (result: Ref)
+    requires TensorNonNegative(t)
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(result)
+{
+    unfold TensorNonNegative(t)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= 0
+    {
+        var val: Int := t.tensor_data[i]
+        if (val < 0) {
+            val := 0
+        }
+        result.tensor_data := result.tensor_data ++ Seq(val)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(result)
+}
+
+method tensor_abs(t: Ref) returns (result: Ref)
+    requires TensorNonNegative(t)
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(result)
+{
+    unfold TensorNonNegative(t)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t.tensor_ndims
+    result.tensor_data := t.tensor_data
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(result)
+}
+
+method tensor_clip(t: Ref, min_val: Int, max_val: Int) returns (result: Ref)
+    requires TensorNonNegative(t)
+    requires min_val >= 0
+    requires max_val >= min_val
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(result)
+    ensures unfolding TensorNonNegative(result) in forall i: Int :: 0 <= i && i < |result.tensor_data| ==>
+        result.tensor_data[i] >= min_val && result.tensor_data[i] <= max_val
+{
+    unfold TensorNonNegative(t)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= min_val && result.tensor_data[j] <= max_val
+    {
+        var val: Int := t.tensor_data[i]
+        if (val < min_val) {
+            val := min_val
+        }
+        if (val > max_val) {
+            val := max_val
+        }
+        result.tensor_data := result.tensor_data ++ Seq(val)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(result)
+}
+
+method tensor_dot(t1: Ref, t2: Ref) returns (result: Int)
+    requires TensorNonNegative(t1)
+    requires TensorNonNegative(t2)
+    requires unfolding TensorNonNegative(t1) in unfolding TensorNonNegative(t2) in |t1.tensor_data| == |t2.tensor_data|
+    ensures TensorNonNegative(t1)
+    ensures TensorNonNegative(t2)
+    ensures result >= 0
+{
+    unfold TensorNonNegative(t1)
+    unfold TensorNonNegative(t2)
+
+    result := 0
+    var size: Int := |t1.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant result >= 0
+    {
+        result := result + t1.tensor_data[i] * t2.tensor_data[i]
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t1)
+    fold TensorNonNegative(t2)
+}
+
+method tensor_norm_squared(t: Ref) returns (norm: Int)
+    requires TensorNonNegative(t)
+    ensures TensorNonNegative(t)
+    ensures norm >= 0
+{
+    unfold TensorNonNegative(t)
+
+    norm := 0
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant norm >= 0
+    {
+        norm := norm + t.tensor_data[i] * t.tensor_data[i]
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+}
+
+method tensor_variance(t: Ref) returns (variance: Int)
+    requires TensorNonNegative(t)
+    requires unfolding TensorNonNegative(t) in |t.tensor_data| > 0
+    ensures TensorNonNegative(t)
+    ensures variance >= 0
+{
+    unfold TensorNonNegative(t)
+
+    var mean: Int := 0
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant mean >= 0
+    {
+        mean := mean + t.tensor_data[i]
+        i := i + 1
+    }
+
+    mean := mean / size
+    variance := 0
+    i := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant variance >= 0
+    {
+        var diff: Int := t.tensor_data[i] - mean
+        if (diff < 0) {
+            diff := -diff
+        }
+        variance := variance + diff * diff
+        i := i + 1
+    }
+
+    variance := variance / size
+
+    fold TensorNonNegative(t)
+}
+
+method tensor_normalize(t: Ref, epsilon: Int) returns (result: Ref)
+    requires TensorNonNegative(t)
+    requires epsilon > 0
+    requires unfolding TensorNonNegative(t) in |t.tensor_data| > 0
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(result)
+{
+    unfold TensorNonNegative(t)
+
+    var mean: Int := 0
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant mean >= 0
+    {
+        mean := mean + t.tensor_data[i]
+        i := i + 1
+    }
+
+    mean := mean / size
+
+    var variance: Int := 0
+    i := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant variance >= 0
+    {
+        var diff: Int := t.tensor_data[i] - mean
+        if (diff < 0) {
+            diff := -diff
+        }
+        variance := variance + diff * diff
+        i := i + 1
+    }
+
+    variance := variance / size
+    var std: Int := variance / 2 + epsilon
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    i := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= 0
+    {
+        var centered: Int := t.tensor_data[i] - mean
+        if (centered < 0) {
+            centered := -centered
+        }
+        var normalized: Int := centered / std
+        result.tensor_data := result.tensor_data ++ Seq(normalized)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(result)
+}
+
+function broadcastDimCompatible(d1: Int, d2: Int): Bool
+{
+    d1 == d2 || d1 == 1 || d2 == 1
+}
+
+function broadcastCompatible(s1: Seq[Int], s2: Seq[Int]): Bool
+    decreases |s1| + |s2|
+{
+    |s1| == 0 && |s2| == 0 ? true :
+    |s1| == 0 ? true :
+    |s2| == 0 ? true :
+    broadcastDimCompatible(s1[|s1| - 1], s2[|s2| - 1]) &&
+        broadcastCompatible(s1[..|s1| - 1], s2[..|s2| - 1])
+}
+
+method tensor_softmax(t: Ref, epsilon: Int) returns (result: Ref)
+    requires TensorNonNegative(t)
+    requires epsilon > 0
+    requires unfolding TensorNonNegative(t) in |t.tensor_data| > 0
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(result)
+{
+    unfold TensorNonNegative(t)
+
+    var max_val: Int := 0
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant max_val >= 0
+    {
+        if (t.tensor_data[i] > max_val) {
+            max_val := t.tensor_data[i]
+        }
+        i := i + 1
+    }
+
+    var sum: Int := 0
+    i := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant sum >= 0
+    {
+        var shifted: Int := t.tensor_data[i] - max_val
+        if (shifted < 0) {
+            shifted := 0
+        }
+        sum := sum + shifted + 1
+        i := i + 1
+    }
+
+    sum := sum + epsilon
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    i := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= 0
+    {
+        var shifted: Int := t.tensor_data[i] - max_val
+        if (shifted < 0) {
+            shifted := 0
+        }
+        var prob: Int := (shifted + 1) * 1000 / sum
+        result.tensor_data := result.tensor_data ++ Seq(prob)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(result)
+}
+
+method tensor_concat(t1: Ref, t2: Ref) returns (result: Ref)
+    requires TensorNonNegative(t1)
+    requires TensorNonNegative(t2)
+    ensures TensorNonNegative(t1)
+    ensures TensorNonNegative(t2)
+    ensures TensorNonNegative(result)
+{
+    unfold TensorNonNegative(t1)
+    unfold TensorNonNegative(t2)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := Seq(|t1.tensor_data| + |t2.tensor_data|)
+    result.tensor_refcount := 1
+    result.tensor_ndims := 1
+    result.tensor_data := t1.tensor_data ++ t2.tensor_data
+
+    fold TensorNonNegative(t1)
+    fold TensorNonNegative(t2)
+    fold TensorNonNegative(result)
+}
+
+method tensor_slice(t: Ref, start: Int, end_idx: Int) returns (result: Ref)
+    requires TensorNonNegative(t)
+    requires start >= 0
+    requires end_idx > start
+    requires end_idx <= unfolding TensorNonNegative(t) in |t.tensor_data|
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(result)
+{
+    unfold TensorNonNegative(t)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := Seq(end_idx - start)
+    result.tensor_refcount := 1
+    result.tensor_ndims := 1
+    result.tensor_data := t.tensor_data[start..end_idx]
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(result)
+}
+
+method tensor_apply_mask(t: Ref, mask: Ref, mask_value: Int) returns (result: Ref)
+    requires TensorNonNegative(t)
+    requires TensorNonNegative(mask)
+    requires mask_value >= 0
+    requires unfolding TensorNonNegative(t) in unfolding TensorNonNegative(mask) in |t.tensor_data| == |mask.tensor_data|
+    ensures TensorNonNegative(t)
+    ensures TensorNonNegative(mask)
+    ensures TensorNonNegative(result)
+{
+    unfold TensorNonNegative(t)
+    unfold TensorNonNegative(mask)
+
+    result := new(tensor_data, tensor_refcount, tensor_shape, tensor_ndims)
+    result.tensor_shape := t.tensor_shape
+    result.tensor_refcount := 1
+    result.tensor_ndims := t.tensor_ndims
+    result.tensor_data := Seq[Int]()
+
+    var size: Int := |t.tensor_data|
+    var i: Int := 0
+
+    while (i < size)
+        invariant 0 <= i && i <= size
+        invariant |result.tensor_data| == i
+        invariant forall j: Int :: 0 <= j && j < i ==>
+            result.tensor_data[j] >= 0
+    {
+        var val: Int := t.tensor_data[i]
+        if (mask.tensor_data[i] == 0) {
+            val := mask_value
+        }
+        result.tensor_data := result.tensor_data ++ Seq(val)
+        i := i + 1
+    }
+
+    fold TensorNonNegative(t)
+    fold TensorNonNegative(mask)
+    fold TensorNonNegative(result)
+}

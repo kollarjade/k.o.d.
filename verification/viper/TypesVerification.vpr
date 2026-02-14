@@ -1,0 +1,222 @@
+domain FixedPoint16 {
+  function fp16Value(fp: FixedPoint16): Int
+  
+  function fp16FromInt(v: Int): FixedPoint16
+  
+  axiom fp16ValueFromInt {
+    forall v: Int :: fp16Value(fp16FromInt(v)) == v
+  }
+}
+
+domain FixedPoint32 {
+  function fp32Value(fp: FixedPoint32): Int
+  
+  function fp32FromInt(v: Int): FixedPoint32
+  
+  axiom fp32ValueFromInt {
+    forall v: Int :: fp32Value(fp32FromInt(v)) == v
+  }
+}
+
+domain FixedPoint64 {
+  function fp64Value(fp: FixedPoint64): Int
+  
+  function fp64FromInt(v: Int): FixedPoint64
+  
+  axiom fp64ValueFromInt {
+    forall v: Int :: fp64Value(fp64FromInt(v)) == v
+  }
+}
+
+function fp16Add(a: FixedPoint16, b: FixedPoint16): FixedPoint16
+  ensures fp16Value(result) == fp16Value(a) + fp16Value(b)
+
+function fp16Sub(a: FixedPoint16, b: FixedPoint16): FixedPoint16
+  ensures fp16Value(result) == fp16Value(a) - fp16Value(b)
+
+function fp16Mul(a: FixedPoint16, b: FixedPoint16): FixedPoint16
+  ensures fp16Value(result) == (fp16Value(a) * fp16Value(b) + 128) / 256
+
+function fp32Add(a: FixedPoint32, b: FixedPoint32): FixedPoint32
+  ensures fp32Value(result) == fp32Value(a) + fp32Value(b)
+
+function fp32Sub(a: FixedPoint32, b: FixedPoint32): FixedPoint32
+  ensures fp32Value(result) == fp32Value(a) - fp32Value(b)
+
+function fp32Mul(a: FixedPoint32, b: FixedPoint32): FixedPoint32
+  ensures fp32Value(result) == (fp32Value(a) * fp32Value(b)) / 65536
+
+function fp64Add(a: FixedPoint64, b: FixedPoint64): FixedPoint64
+  ensures fp64Value(result) == fp64Value(a) + fp64Value(b)
+
+function fp64Sub(a: FixedPoint64, b: FixedPoint64): FixedPoint64
+  ensures fp64Value(result) == fp64Value(a) - fp64Value(b)
+
+function fp64Mul(a: FixedPoint64, b: FixedPoint64): FixedPoint64
+  ensures fp64Value(result) == (fp64Value(a) * fp64Value(b)) / 4294967296
+
+method verifyFP16AddCommutative(a: FixedPoint16, b: FixedPoint16)
+  ensures fp16Add(a, b) == fp16Add(b, a)
+{
+  assert fp16Value(fp16Add(a, b)) == fp16Value(a) + fp16Value(b)
+  assert fp16Value(fp16Add(b, a)) == fp16Value(b) + fp16Value(a)
+  assert fp16Value(a) + fp16Value(b) == fp16Value(b) + fp16Value(a)
+}
+
+method verifyFP16AddAssociative(a: FixedPoint16, b: FixedPoint16, c: FixedPoint16)
+  ensures fp16Add(fp16Add(a, b), c) == fp16Add(a, fp16Add(b, c))
+{
+  assert fp16Value(fp16Add(fp16Add(a, b), c)) == (fp16Value(a) + fp16Value(b)) + fp16Value(c)
+  assert fp16Value(fp16Add(a, fp16Add(b, c))) == fp16Value(a) + (fp16Value(b) + fp16Value(c))
+}
+
+method verifyFP32AddCommutative(a: FixedPoint32, b: FixedPoint32)
+  ensures fp32Add(a, b) == fp32Add(b, a)
+{
+  assert fp32Value(fp32Add(a, b)) == fp32Value(a) + fp32Value(b)
+  assert fp32Value(fp32Add(b, a)) == fp32Value(b) + fp32Value(a)
+}
+
+method verifyFP32AddAssociative(a: FixedPoint32, b: FixedPoint32, c: FixedPoint32)
+  ensures fp32Add(fp32Add(a, b), c) == fp32Add(a, fp32Add(b, c))
+{
+  assert fp32Value(fp32Add(fp32Add(a, b), c)) == (fp32Value(a) + fp32Value(b)) + fp32Value(c)
+  assert fp32Value(fp32Add(a, fp32Add(b, c))) == fp32Value(a) + (fp32Value(b) + fp32Value(c))
+}
+
+method verifyFP32MulCommutative(a: FixedPoint32, b: FixedPoint32)
+  ensures fp32Mul(a, b) == fp32Mul(b, a)
+{
+  assert fp32Value(fp32Mul(a, b)) == (fp32Value(a) * fp32Value(b)) / 65536
+  assert fp32Value(fp32Mul(b, a)) == (fp32Value(b) * fp32Value(a)) / 65536
+}
+
+method verifyFP64AddCommutative(a: FixedPoint64, b: FixedPoint64)
+  ensures fp64Add(a, b) == fp64Add(b, a)
+{
+  assert fp64Value(fp64Add(a, b)) == fp64Value(a) + fp64Value(b)
+  assert fp64Value(fp64Add(b, a)) == fp64Value(b) + fp64Value(a)
+}
+
+function clamp(n: Int, minVal: Int, maxVal: Int): Int
+  requires minVal <= maxVal
+  ensures result >= minVal && result <= maxVal
+  ensures (n < minVal ==> result == minVal)
+  ensures (n > maxVal ==> result == maxVal)
+  ensures (minVal <= n && n <= maxVal ==> result == n)
+
+method verifyClampMin(n: Int, minVal: Int, maxVal: Int)
+  requires minVal <= maxVal
+  ensures clamp(n, minVal, maxVal) >= minVal
+{
+  var clamped: Int := clamp(n, minVal, maxVal)
+  assert clamped >= minVal
+}
+
+method verifyClampMax(n: Int, minVal: Int, maxVal: Int)
+  requires minVal <= maxVal
+  ensures clamp(n, minVal, maxVal) <= maxVal
+{
+  var clamped: Int := clamp(n, minVal, maxVal)
+  assert clamped <= maxVal
+}
+
+method verifyClampIdempotent(n: Int, minVal: Int, maxVal: Int)
+  requires minVal <= maxVal
+  ensures clamp(clamp(n, minVal, maxVal), minVal, maxVal) == clamp(n, minVal, maxVal)
+{
+  var clamped1: Int := clamp(n, minVal, maxVal)
+  var clamped2: Int := clamp(clamped1, minVal, maxVal)
+  assert clamped1 == clamped2
+}
+
+domain ComplexFixedPoint {
+  function complexReal(c: ComplexFixedPoint): FixedPoint32
+  function complexImag(c: ComplexFixedPoint): FixedPoint32
+  
+  function mkComplex(r: FixedPoint32, i: FixedPoint32): ComplexFixedPoint
+  
+  axiom complexComponents {
+    forall r: FixedPoint32, i: FixedPoint32 ::
+      complexReal(mkComplex(r, i)) == r && complexImag(mkComplex(r, i)) == i
+  }
+}
+
+function complexAdd(a: ComplexFixedPoint, b: ComplexFixedPoint): ComplexFixedPoint
+  ensures complexReal(result) == fp32Add(complexReal(a), complexReal(b))
+  ensures complexImag(result) == fp32Add(complexImag(a), complexImag(b))
+
+function complexSub(a: ComplexFixedPoint, b: ComplexFixedPoint): ComplexFixedPoint
+  ensures complexReal(result) == fp32Sub(complexReal(a), complexReal(b))
+  ensures complexImag(result) == fp32Sub(complexImag(a), complexImag(b))
+
+function complexMul(a: ComplexFixedPoint, b: ComplexFixedPoint): ComplexFixedPoint
+  ensures complexReal(result) == fp32Sub(fp32Mul(complexReal(a), complexReal(b)),
+                                          fp32Mul(complexImag(a), complexImag(b)))
+  ensures complexImag(result) == fp32Add(fp32Mul(complexReal(a), complexImag(b)),
+                                          fp32Mul(complexImag(a), complexReal(b)))
+
+method verifyComplexAddCommutative(a: ComplexFixedPoint, b: ComplexFixedPoint)
+  ensures complexAdd(a, b) == complexAdd(b, a)
+{
+  assert complexReal(complexAdd(a, b)) == fp32Add(complexReal(a), complexReal(b))
+  assert complexReal(complexAdd(b, a)) == fp32Add(complexReal(b), complexReal(a))
+}
+
+method verifyComplexAddAssociative(a: ComplexFixedPoint, b: ComplexFixedPoint, c: ComplexFixedPoint)
+  ensures complexAdd(complexAdd(a, b), c) == complexAdd(a, complexAdd(b, c))
+{
+  var ab: ComplexFixedPoint := complexAdd(a, b)
+  var abc1: ComplexFixedPoint := complexAdd(ab, c)
+  
+  var bc: ComplexFixedPoint := complexAdd(b, c)
+  var abc2: ComplexFixedPoint := complexAdd(a, bc)
+  
+  assert abc1 == abc2
+}
+
+function factorial(n: Int): Int
+  requires n >= 0
+  ensures result >= 1
+  decreases n
+{
+  n == 0 ? 1 : n * factorial(n - 1)
+}
+
+method verifyFactorialPositive(n: Int)
+  requires n >= 0
+  ensures factorial(n) >= 1
+{
+  if (n == 0) {
+    assert factorial(0) == 1
+  } else {
+    assert factorial(n) >= 1
+  }
+}
+
+function power(base: Int, exp: Int): Int
+  requires exp >= 0
+  ensures result >= 0
+  ensures (exp == 0 ==> result == 1)
+  ensures (base == 1 ==> result == 1)
+  decreases exp
+{
+  exp == 0 ? 1 : base * power(base, exp - 1)
+}
+
+method verifyPowerZero(base: Int)
+  ensures power(base, 0) == 1
+{
+  assert power(base, 0) == 1
+}
+
+method verifyPowerOne(exp: Int)
+  requires exp >= 0
+  ensures power(1, exp) == 1
+{
+  if (exp == 0) {
+    assert power(1, 0) == 1
+  } else {
+    assert power(1, exp) == 1
+  }
+}

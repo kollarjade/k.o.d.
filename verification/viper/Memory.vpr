@@ -1,0 +1,651 @@
+define PAGE_SIZE_BYTES 4096
+define PAGE_ALIGN_MASK 4095
+define MAX_BUFFER_SIZE 9223372036854775807
+define MAX_REFCOUNT 2147483647
+define MIN_BLOCK_SIZE 1
+define MIN_SLAB_SIZE 1
+
+field arena_buffer_size: Int
+field arena_offset: Int
+field arena_refcount: Int
+field arena_epoch: Int
+
+predicate Arena(arena: Ref) {
+    acc(arena.arena_buffer_size) &&
+    acc(arena.arena_offset) &&
+    acc(arena.arena_refcount) &&
+    acc(arena.arena_epoch) &&
+    arena.arena_buffer_size > 0 &&
+    arena.arena_buffer_size <= MAX_BUFFER_SIZE &&
+    arena.arena_offset >= 0 &&
+    arena.arena_offset <= arena.arena_buffer_size &&
+    arena.arena_refcount > 0 &&
+    arena.arena_refcount <= MAX_REFCOUNT &&
+    arena.arena_epoch >= 0
+}
+
+function arena_page_align(size: Int): Int
+    requires size > 0
+    requires size <= MAX_BUFFER_SIZE - PAGE_SIZE_BYTES
+    ensures result >= size
+    ensures result % PAGE_SIZE_BYTES == 0
+    ensures result <= size + PAGE_SIZE_BYTES - 1
+{
+    ((size + PAGE_ALIGN_MASK) / PAGE_SIZE_BYTES) * PAGE_SIZE_BYTES
+}
+
+method arena_init(size: Int) returns (arena: Ref, alloc_result: Int)
+    requires size > 0
+    requires size <= MAX_BUFFER_SIZE - PAGE_SIZE_BYTES
+    ensures alloc_result >= 0
+    ensures alloc_result > 0 ==> Arena(arena)
+    ensures alloc_result > 0 ==> arena.arena_buffer_size == arena_page_align(size)
+    ensures alloc_result > 0 ==> arena.arena_offset == 0
+    ensures alloc_result > 0 ==> arena.arena_refcount == 1
+    ensures alloc_result > 0 ==> arena.arena_epoch == 0
+{
+    arena := new(arena_buffer_size, arena_offset, arena_refcount, arena_epoch)
+    arena.arena_buffer_size := arena_page_align(size)
+    arena.arena_offset := 0
+    arena.arena_refcount := 1
+    arena.arena_epoch := 0
+    alloc_result := arena.arena_buffer_size
+    fold Arena(arena)
+}
+
+method arena_alloc(arena: Ref, size: Int, alignment: Int) returns (success: Bool, alloc_offset: Int)
+    requires Arena(arena)
+    requires size > 0
+    requires alignment > 0
+    requires alignment == 1 || alignment == 2 || alignment == 4 || alignment == 8 || alignment == 16 || alignment == 32 || alignment == 64
+    ensures Arena(arena)
+    ensures success ==> alloc_offset >= old(unfolding Arena(arena) in arena.arena_offset)
+    ensures success ==> alloc_offset % alignment == 0
+    ensures success ==> alloc_offset + size <= unfolding Arena(arena) in arena.arena_buffer_size
+    ensures !success ==> alloc_offset == -1
+    ensures !success ==> unfolding Arena(arena) in arena.arena_offset == old(unfolding Arena(arena) in arena.arena_offset)
+{
+    unfold Arena(arena)
+    var current_offset: Int := arena.arena_offset
+    var aligned_offset: Int := ((current_offset + alignment - 1) / alignment) * alignment
+
+    if (aligned_offset > MAX_BUFFER_SIZE - size) {
+        alloc_offset := -1
+        success := false
+        fold Arena(arena)
+    } else {
+        var end_offset: Int := aligned_offset + size
+
+        if (end_offset <= arena.arena_buffer_size && end_offset >= 0) {
+            arena.arena_offset := end_offset
+            alloc_offset := aligned_offset
+            success := true
+        } else {
+            alloc_offset := -1
+            success := false
+        }
+
+        fold Arena(arena)
+    }
+}
+
+method arena_reset(arena: Ref)
+    requires Arena(arena)
+    ensures Arena(arena)
+    ensures unfolding Arena(arena) in arena.arena_offset == 0
+    ensures unfolding Arena(arena) in arena.arena_buffer_size == old(unfolding Arena(arena) in arena.arena_buffer_size)
+    ensures unfolding Arena(arena) in arena.arena_epoch == old(unfolding Arena(arena) in arena.arena_epoch) + 1
+{
+    unfold Arena(arena)
+    arena.arena_offset := 0
+    arena.arena_epoch := arena.arena_epoch + 1
+    fold Arena(arena)
+}
+
+method arena_retain(arena: Ref)
+    requires Arena(arena)
+    requires unfolding Arena(arena) in arena.arena_refcount < MAX_REFCOUNT
+    ensures Arena(arena)
+    ensures unfolding Arena(arena) in arena.arena_refcount == old(unfolding Arena(arena) in arena.arena_refcount) + 1
+{
+    unfold Arena(arena)
+    arena.arena_refcount := arena.arena_refcount + 1
+    fold Arena(arena)
+}
+
+method arena_release(arena: Ref) returns (should_free: Bool)
+    requires Arena(arena)
+    ensures should_free ==> old(unfolding Arena(arena) in arena.arena_refcount) == 1
+    ensures !should_free ==> Arena(arena)
+    ensures !should_free ==> unfolding Arena(arena) in arena.arena_refcount == old(unfolding Arena(arena) in arena.arena_refcount) - 1
+{
+    unfold Arena(arena)
+
+    if (arena.arena_refcount == 1) {
+        should_free := true
+    } else {
+        arena.arena_refcount := arena.arena_refcount - 1
+        should_free := false
+        fold Arena(arena)
+    }
+}
+
+function arena_allocated(arena: Ref): Int
+    requires Arena(arena)
+    ensures result >= 0
+{
+    unfolding Arena(arena) in arena.arena_offset
+}
+
+function arena_remaining(arena: Ref): Int
+    requires Arena(arena)
+    ensures result >= 0
+{
+    unfolding Arena(arena) in arena.arena_buffer_size - arena.arena_offset
+}
+
+function arena_get_epoch(arena: Ref): Int
+    requires Arena(arena)
+    ensures result >= 0
+{
+    unfolding Arena(arena) in arena.arena_epoch
+}
+
+field slab_block_size: Int
+field slab_num_blocks: Int
+field slab_used_blocks: Int
+field slab_free_bitmap: Seq[Bool]
+
+predicate Slab(slab: Ref) {
+    acc(slab.slab_block_size) &&
+    acc(slab.slab_num_blocks) &&
+    acc(slab.slab_used_blocks) &&
+    acc(slab.slab_free_bitmap) &&
+    slab.slab_block_size >= MIN_BLOCK_SIZE &&
+    slab.slab_num_blocks > 0 &&
+    slab.slab_used_blocks >= 0 &&
+    slab.slab_used_blocks <= slab.slab_num_blocks &&
+    |slab.slab_free_bitmap| == slab.slab_num_blocks
+}
+
+method slab_init(block_size: Int, slab_size: Int) returns (slab: Ref, num_blocks: Int)
+    requires block_size >= MIN_BLOCK_SIZE
+    requires slab_size >= MIN_SLAB_SIZE
+    requires slab_size >= block_size
+    ensures Slab(slab)
+    ensures num_blocks == slab_size / block_size
+    ensures num_blocks > 0
+    ensures unfolding Slab(slab) in slab.slab_block_size == block_size
+    ensures unfolding Slab(slab) in slab.slab_num_blocks == num_blocks
+    ensures unfolding Slab(slab) in slab.slab_used_blocks == 0
+{
+    slab := new(slab_block_size, slab_num_blocks, slab_used_blocks, slab_free_bitmap)
+    num_blocks := slab_size / block_size
+    slab.slab_block_size := block_size
+    slab.slab_num_blocks := num_blocks
+    slab.slab_used_blocks := 0
+
+    var bitmap: Seq[Bool] := Seq[Bool]()
+    var i: Int := 0
+    while (i < num_blocks)
+        invariant 0 <= i && i <= num_blocks
+        invariant |bitmap| == i
+        invariant forall j: Int :: 0 <= j && j < i ==> bitmap[j] == false
+    {
+        bitmap := bitmap ++ Seq(false)
+        i := i + 1
+    }
+    slab.slab_free_bitmap := bitmap
+
+    fold Slab(slab)
+}
+
+method slab_alloc_block(slab: Ref) returns (success: Bool, block_index: Int)
+    requires Slab(slab)
+    ensures Slab(slab)
+    ensures success ==> block_index >= 0
+    ensures success ==> block_index < unfolding Slab(slab) in slab.slab_num_blocks
+    ensures success ==> unfolding Slab(slab) in slab.slab_used_blocks == old(unfolding Slab(slab) in slab.slab_used_blocks) + 1
+    ensures !success ==> block_index == -1
+    ensures !success ==> unfolding Slab(slab) in slab.slab_used_blocks == old(unfolding Slab(slab) in slab.slab_used_blocks)
+{
+    unfold Slab(slab)
+
+    if (slab.slab_used_blocks < slab.slab_num_blocks) {
+        var i: Int := 0
+        block_index := -1
+
+        while (i < slab.slab_num_blocks && block_index == -1)
+            invariant 0 <= i && i <= slab.slab_num_blocks
+            invariant block_index == -1 || (block_index >= 0 && block_index < slab.slab_num_blocks)
+        {
+            if (!slab.slab_free_bitmap[i]) {
+                block_index := i
+            }
+            i := i + 1
+        }
+
+        if (block_index >= 0) {
+            slab.slab_free_bitmap := slab.slab_free_bitmap[block_index := true]
+            slab.slab_used_blocks := slab.slab_used_blocks + 1
+            success := true
+        } else {
+            success := false
+        }
+    } else {
+        block_index := -1
+        success := false
+    }
+
+    fold Slab(slab)
+}
+
+method slab_free_block(slab: Ref, block_index: Int) returns (success: Bool)
+    requires Slab(slab)
+    requires block_index >= 0
+    requires block_index < unfolding Slab(slab) in slab.slab_num_blocks
+    ensures Slab(slab)
+    ensures success ==> unfolding Slab(slab) in slab.slab_used_blocks == old(unfolding Slab(slab) in slab.slab_used_blocks) - 1
+    ensures !success ==> unfolding Slab(slab) in slab.slab_used_blocks == old(unfolding Slab(slab) in slab.slab_used_blocks)
+{
+    unfold Slab(slab)
+
+    if (slab.slab_free_bitmap[block_index]) {
+        slab.slab_free_bitmap := slab.slab_free_bitmap[block_index := false]
+        slab.slab_used_blocks := slab.slab_used_blocks - 1
+        success := true
+    } else {
+        success := false
+    }
+
+    fold Slab(slab)
+}
+
+function slab_is_full(slab: Ref): Bool
+    requires Slab(slab)
+{
+    unfolding Slab(slab) in slab.slab_used_blocks == slab.slab_num_blocks
+}
+
+function slab_is_empty(slab: Ref): Bool
+    requires Slab(slab)
+{
+    unfolding Slab(slab) in slab.slab_used_blocks == 0
+}
+
+function slab_available_blocks(slab: Ref): Int
+    requires Slab(slab)
+    ensures result >= 0
+{
+    unfolding Slab(slab) in slab.slab_num_blocks - slab.slab_used_blocks
+}
+
+field pool_block_size: Int
+field pool_num_blocks: Int
+field pool_free_count: Int
+field pool_allocation_count: Int
+
+predicate Pool(pool: Ref) {
+    acc(pool.pool_block_size) &&
+    acc(pool.pool_num_blocks) &&
+    acc(pool.pool_free_count) &&
+    acc(pool.pool_allocation_count) &&
+    pool.pool_block_size > 0 &&
+    pool.pool_num_blocks > 0 &&
+    pool.pool_free_count >= 0 &&
+    pool.pool_free_count <= pool.pool_num_blocks &&
+    pool.pool_allocation_count >= 0 &&
+    pool.pool_allocation_count <= pool.pool_num_blocks &&
+    pool.pool_free_count + pool.pool_allocation_count == pool.pool_num_blocks
+}
+
+method pool_init(block_size: Int, num_blocks: Int) returns (pool: Ref)
+    requires block_size > 0
+    requires num_blocks > 0
+    ensures Pool(pool)
+    ensures unfolding Pool(pool) in pool.pool_block_size == block_size
+    ensures unfolding Pool(pool) in pool.pool_num_blocks == num_blocks
+    ensures unfolding Pool(pool) in pool.pool_free_count == num_blocks
+    ensures unfolding Pool(pool) in pool.pool_allocation_count == 0
+{
+    pool := new(pool_block_size, pool_num_blocks, pool_free_count, pool_allocation_count)
+    pool.pool_block_size := block_size
+    pool.pool_num_blocks := num_blocks
+    pool.pool_free_count := num_blocks
+    pool.pool_allocation_count := 0
+    fold Pool(pool)
+}
+
+method pool_alloc(pool: Ref) returns (success: Bool, block_addr: Int)
+    requires Pool(pool)
+    ensures Pool(pool)
+    ensures success ==> block_addr >= 0
+    ensures success ==> unfolding Pool(pool) in pool.pool_free_count == old(unfolding Pool(pool) in pool.pool_free_count) - 1
+    ensures success ==> unfolding Pool(pool) in pool.pool_allocation_count == old(unfolding Pool(pool) in pool.pool_allocation_count) + 1
+    ensures !success ==> block_addr == -1
+    ensures !success ==> unfolding Pool(pool) in pool.pool_free_count == old(unfolding Pool(pool) in pool.pool_free_count)
+{
+    unfold Pool(pool)
+
+    if (pool.pool_free_count > 0) {
+        block_addr := (pool.pool_num_blocks - pool.pool_free_count) * pool.pool_block_size
+        pool.pool_free_count := pool.pool_free_count - 1
+        pool.pool_allocation_count := pool.pool_allocation_count + 1
+        success := true
+    } else {
+        block_addr := -1
+        success := false
+    }
+
+    fold Pool(pool)
+}
+
+method pool_free(pool: Ref, block_addr: Int) returns (success: Bool)
+    requires Pool(pool)
+    requires block_addr >= 0
+    ensures Pool(pool)
+    ensures success ==> unfolding Pool(pool) in pool.pool_free_count == old(unfolding Pool(pool) in pool.pool_free_count) + 1
+    ensures success ==> unfolding Pool(pool) in pool.pool_allocation_count == old(unfolding Pool(pool) in pool.pool_allocation_count) - 1
+    ensures !success ==> unfolding Pool(pool) in pool.pool_free_count == old(unfolding Pool(pool) in pool.pool_free_count)
+{
+    unfold Pool(pool)
+
+    if (pool.pool_allocation_count > 0 && pool.pool_free_count < pool.pool_num_blocks) {
+        pool.pool_free_count := pool.pool_free_count + 1
+        pool.pool_allocation_count := pool.pool_allocation_count - 1
+        success := true
+    } else {
+        success := false
+    }
+
+    fold Pool(pool)
+}
+
+function pool_has_free_blocks(pool: Ref): Bool
+    requires Pool(pool)
+{
+    unfolding Pool(pool) in pool.pool_free_count > 0
+}
+
+function pool_all_free(pool: Ref): Bool
+    requires Pool(pool)
+{
+    unfolding Pool(pool) in pool.pool_free_count == pool.pool_num_blocks
+}
+
+field refcount_value: Int
+field refcount_max: Int
+
+predicate Refcount(rc: Ref) {
+    acc(rc.refcount_value) &&
+    acc(rc.refcount_max) &&
+    rc.refcount_value >= 0 &&
+    rc.refcount_value <= rc.refcount_max &&
+    rc.refcount_max > 0
+}
+
+method refcount_init(max_value: Int) returns (rc: Ref)
+    requires max_value > 0
+    ensures Refcount(rc)
+    ensures unfolding Refcount(rc) in rc.refcount_value == 1
+    ensures unfolding Refcount(rc) in rc.refcount_max == max_value
+{
+    rc := new(refcount_value, refcount_max)
+    rc.refcount_value := 1
+    rc.refcount_max := max_value
+    fold Refcount(rc)
+}
+
+method refcount_init_zero(max_value: Int) returns (rc: Ref)
+    requires max_value > 0
+    ensures Refcount(rc)
+    ensures unfolding Refcount(rc) in rc.refcount_value == 0
+    ensures unfolding Refcount(rc) in rc.refcount_max == max_value
+{
+    rc := new(refcount_value, refcount_max)
+    rc.refcount_value := 0
+    rc.refcount_max := max_value
+    fold Refcount(rc)
+}
+
+method refcount_increment(rc: Ref) returns (success: Bool)
+    requires Refcount(rc)
+    ensures Refcount(rc)
+    ensures success ==> unfolding Refcount(rc) in rc.refcount_value == old(unfolding Refcount(rc) in rc.refcount_value) + 1
+    ensures !success ==> unfolding Refcount(rc) in rc.refcount_value == old(unfolding Refcount(rc) in rc.refcount_value)
+{
+    unfold Refcount(rc)
+
+    if (rc.refcount_value < rc.refcount_max) {
+        rc.refcount_value := rc.refcount_value + 1
+        success := true
+    } else {
+        success := false
+    }
+
+    fold Refcount(rc)
+}
+
+method refcount_decrement(rc: Ref) returns (is_zero: Bool)
+    requires Refcount(rc)
+    ensures Refcount(rc)
+    ensures old(unfolding Refcount(rc) in rc.refcount_value) > 0 ==>
+        unfolding Refcount(rc) in rc.refcount_value == old(unfolding Refcount(rc) in rc.refcount_value) - 1
+    ensures old(unfolding Refcount(rc) in rc.refcount_value) == 0 ==>
+        unfolding Refcount(rc) in rc.refcount_value == 0
+    ensures is_zero == (unfolding Refcount(rc) in rc.refcount_value == 0)
+{
+    unfold Refcount(rc)
+
+    if (rc.refcount_value > 0) {
+        rc.refcount_value := rc.refcount_value - 1
+    }
+
+    is_zero := rc.refcount_value == 0
+
+    fold Refcount(rc)
+}
+
+function refcount_is_zero(rc: Ref): Bool
+    requires Refcount(rc)
+{
+    unfolding Refcount(rc) in rc.refcount_value == 0
+}
+
+function refcount_get_value(rc: Ref): Int
+    requires Refcount(rc)
+    ensures result >= 0
+{
+    unfolding Refcount(rc) in rc.refcount_value
+}
+
+field region_start_addr: Int
+field region_size: Int
+field region_end_addr: Int
+field region_is_allocated: Bool
+
+predicate MemoryRegion(region: Ref) {
+    acc(region.region_start_addr) &&
+    acc(region.region_size) &&
+    acc(region.region_end_addr) &&
+    acc(region.region_is_allocated) &&
+    region.region_start_addr >= 0 &&
+    region.region_size > 0 &&
+    region.region_end_addr == region.region_start_addr + region.region_size &&
+    region.region_end_addr > region.region_start_addr
+}
+
+method memregion_init(start: Int, size: Int) returns (region: Ref)
+    requires start >= 0
+    requires size > 0
+    requires start <= MAX_BUFFER_SIZE - size
+    ensures MemoryRegion(region)
+    ensures unfolding MemoryRegion(region) in region.region_start_addr == start
+    ensures unfolding MemoryRegion(region) in region.region_size == size
+    ensures unfolding MemoryRegion(region) in region.region_is_allocated == false
+{
+    region := new(region_start_addr, region_size, region_end_addr, region_is_allocated)
+    region.region_start_addr := start
+    region.region_size := size
+    region.region_end_addr := start + size
+    region.region_is_allocated := false
+    fold MemoryRegion(region)
+}
+
+method memregion_allocate(region: Ref) returns (success: Bool)
+    requires MemoryRegion(region)
+    ensures MemoryRegion(region)
+    ensures success ==> unfolding MemoryRegion(region) in region.region_is_allocated == true
+    ensures !success ==> unfolding MemoryRegion(region) in region.region_is_allocated == old(unfolding MemoryRegion(region) in region.region_is_allocated)
+{
+    unfold MemoryRegion(region)
+
+    if (!region.region_is_allocated) {
+        region.region_is_allocated := true
+        success := true
+    } else {
+        success := false
+    }
+
+    fold MemoryRegion(region)
+}
+
+method memregion_deallocate(region: Ref) returns (success: Bool)
+    requires MemoryRegion(region)
+    ensures MemoryRegion(region)
+    ensures success ==> unfolding MemoryRegion(region) in region.region_is_allocated == false
+    ensures !success ==> unfolding MemoryRegion(region) in region.region_is_allocated == old(unfolding MemoryRegion(region) in region.region_is_allocated)
+{
+    unfold MemoryRegion(region)
+
+    if (region.region_is_allocated) {
+        region.region_is_allocated := false
+        success := true
+    } else {
+        success := false
+    }
+
+    fold MemoryRegion(region)
+}
+
+function memregion_in_bounds(region: Ref, addr: Int): Bool
+    requires MemoryRegion(region)
+{
+    unfolding MemoryRegion(region) in
+        region.region_start_addr <= addr && addr < region.region_end_addr
+}
+
+function memregion_is_allocated(region: Ref): Bool
+    requires MemoryRegion(region)
+{
+    unfolding MemoryRegion(region) in region.region_is_allocated
+}
+
+field cache_valid: Bool
+field cache_dirty: Bool
+field cache_tag: Int
+field cache_data_present: Bool
+
+predicate CacheLine(line: Ref) {
+    acc(line.cache_valid) &&
+    acc(line.cache_dirty) &&
+    acc(line.cache_tag) &&
+    acc(line.cache_data_present) &&
+    line.cache_tag >= 0 &&
+    (!line.cache_valid ==> !line.cache_dirty) &&
+    (!line.cache_valid ==> !line.cache_data_present)
+}
+
+method cacheline_init() returns (line: Ref)
+    ensures CacheLine(line)
+    ensures unfolding CacheLine(line) in line.cache_valid == false
+    ensures unfolding CacheLine(line) in line.cache_dirty == false
+    ensures unfolding CacheLine(line) in line.cache_tag == 0
+    ensures unfolding CacheLine(line) in line.cache_data_present == false
+{
+    line := new(cache_valid, cache_dirty, cache_tag, cache_data_present)
+    line.cache_valid := false
+    line.cache_dirty := false
+    line.cache_tag := 0
+    line.cache_data_present := false
+    fold CacheLine(line)
+}
+
+method cacheline_load(line: Ref, tag_val: Int)
+    requires CacheLine(line)
+    requires tag_val >= 0
+    ensures CacheLine(line)
+    ensures unfolding CacheLine(line) in line.cache_valid == true
+    ensures unfolding CacheLine(line) in line.cache_dirty == false
+    ensures unfolding CacheLine(line) in line.cache_tag == tag_val
+    ensures unfolding CacheLine(line) in line.cache_data_present == true
+{
+    unfold CacheLine(line)
+    line.cache_valid := true
+    line.cache_dirty := false
+    line.cache_tag := tag_val
+    line.cache_data_present := true
+    fold CacheLine(line)
+}
+
+method cacheline_store(line: Ref, tag_val: Int)
+    requires CacheLine(line)
+    requires tag_val >= 0
+    ensures CacheLine(line)
+    ensures unfolding CacheLine(line) in line.cache_valid == true
+    ensures unfolding CacheLine(line) in line.cache_dirty == true
+    ensures unfolding CacheLine(line) in line.cache_tag == tag_val
+    ensures unfolding CacheLine(line) in line.cache_data_present == true
+{
+    unfold CacheLine(line)
+    line.cache_valid := true
+    line.cache_dirty := true
+    line.cache_tag := tag_val
+    line.cache_data_present := true
+    fold CacheLine(line)
+}
+
+method cacheline_invalidate(line: Ref)
+    requires CacheLine(line)
+    ensures CacheLine(line)
+    ensures unfolding CacheLine(line) in line.cache_valid == false
+    ensures unfolding CacheLine(line) in line.cache_dirty == false
+    ensures unfolding CacheLine(line) in line.cache_data_present == false
+{
+    unfold CacheLine(line)
+    line.cache_valid := false
+    line.cache_dirty := false
+    line.cache_data_present := false
+    fold CacheLine(line)
+}
+
+method cacheline_flush(line: Ref) returns (was_dirty: Bool)
+    requires CacheLine(line)
+    ensures CacheLine(line)
+    ensures unfolding CacheLine(line) in line.cache_dirty == false
+    ensures was_dirty == old(unfolding CacheLine(line) in line.cache_dirty)
+{
+    unfold CacheLine(line)
+    was_dirty := line.cache_dirty
+    line.cache_dirty := false
+    fold CacheLine(line)
+}
+
+function cacheline_is_valid(line: Ref): Bool
+    requires CacheLine(line)
+{
+    unfolding CacheLine(line) in line.cache_valid
+}
+
+function cacheline_is_dirty(line: Ref): Bool
+    requires CacheLine(line)
+{
+    unfolding CacheLine(line) in line.cache_dirty
+}
+
+function cacheline_get_tag(line: Ref): Int
+    requires CacheLine(line)
+    ensures result >= 0
+{
+    unfolding CacheLine(line) in line.cache_tag
+}

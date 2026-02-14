@@ -1,0 +1,31 @@
+enable_experimental;
+import "quantum_graph.cry";
+
+m <- llvm_load_module "main.bc";
+
+let canonicalize_spec = do {
+    v <- llvm_fresh_var "v" (llvm_int 64);
+    llvm_execute_func [llvm_term v];
+    llvm_return (llvm_term {{ canonicalizeFloat v : [64] }});
+};
+llvm_verify m "verify_canonicalize_float" [] false canonicalize_spec z3;
+
+let write_u64_le_spec = do {
+    buf_ptr <- llvm_alloc (llvm_array 8 (llvm_int 8));
+    v <- llvm_fresh_var "v" (llvm_int 64);
+    llvm_execute_func [buf_ptr, llvm_term v];
+    llvm_points_to buf_ptr (llvm_term {{ writeU64Le v : [8][8] }});
+};
+llvm_verify m "verify_write_u64_le" [] false write_u64_le_spec z3;
+
+let add_digest_spec = do {
+    acc_ptr <- llvm_alloc (llvm_array 32 (llvm_int 8));
+    d_ptr <- llvm_alloc_readonly (llvm_array 32 (llvm_int 8));
+    acc_val <- llvm_fresh_var "acc" (llvm_array 32 (llvm_int 8));
+    d_val <- llvm_fresh_var "d" (llvm_array 32 (llvm_int 8));
+    llvm_points_to acc_ptr (llvm_term acc_val);
+    llvm_points_to d_ptr (llvm_term d_val);
+    llvm_execute_func [acc_ptr, d_ptr];
+    llvm_points_to acc_ptr (llvm_term {{ addDigestSpec acc_val d_val : [32][8] }});
+};
+llvm_verify m "verify_add_digest" [] false add_digest_spec z3;
