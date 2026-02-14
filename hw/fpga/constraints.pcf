@@ -1,0 +1,223 @@
+set_io clk J3
+create_clock -period 10 -name clk [get_ports clk]
+set_io rst_n K11
+set_io -pullup yes rst_n
+set_io axi_awaddr[0] A1
+set_io axi_awaddr[1] A2
+set_io axi_awaddr[2] A3
+set_io axi_awaddr[3] A4
+set_io axi_awaddr[4] A5
+set_io axi_awaddr[5] A6
+set_io axi_awaddr[6] A7
+set_io axi_awaddr[7] A8
+set_io axi_awaddr[8] A9
+set_io axi_awaddr[9] A10
+set_io axi_awaddr[10] A11
+set_io axi_awaddr[11] A12
+set_io axi_awaddr[12] A13
+set_io axi_awaddr[13] A14
+set_io axi_awaddr[14] A15
+set_io axi_awaddr[15] A16
+set_io axi_awvalid B1
+set_io axi_awready B2
+set_io axi_awprot[0] B3
+set_io axi_awprot[1] B4
+set_io axi_awprot[2] B5
+set_io axi_wdata[0] C1
+set_io axi_wdata[1] C2
+set_io axi_wdata[2] C3
+set_io axi_wdata[3] C4
+set_io axi_wdata[4] C5
+set_io axi_wdata[5] C6
+set_io axi_wdata[6] C7
+set_io axi_wdata[7] C8
+set_io axi_wdata[8] C9
+set_io axi_wdata[9] C10
+set_io axi_wdata[10] C11
+set_io axi_wdata[11] C12
+set_io axi_wdata[12] C13
+set_io axi_wdata[13] C14
+set_io axi_wdata[14] C15
+set_io axi_wdata[15] C16
+set_io axi_wdata[16] D1
+set_io axi_wdata[17] D2
+set_io axi_wdata[18] D3
+set_io axi_wdata[19] D4
+set_io axi_wdata[20] D5
+set_io axi_wdata[21] D6
+set_io axi_wdata[22] D7
+set_io axi_wdata[23] D8
+set_io axi_wdata[24] D9
+set_io axi_wdata[25] D10
+set_io axi_wdata[26] D11
+set_io axi_wdata[27] D12
+set_io axi_wdata[28] D13
+set_io axi_wdata[29] D14
+set_io axi_wdata[30] D15
+set_io axi_wdata[31] D16
+set_io axi_wstrb[0] E1
+set_io axi_wstrb[1] E2
+set_io axi_wstrb[2] E3
+set_io axi_wstrb[3] E4
+set_io axi_wvalid E5
+set_io axi_wready E6
+set_io axi_bresp[0] F1
+set_io axi_bresp[1] F2
+set_io axi_bvalid F3
+set_io axi_bready F4
+set_io axi_araddr[0] G2
+set_io axi_araddr[1] G3
+set_io axi_araddr[2] G4
+set_io axi_araddr[3] G5
+set_io axi_araddr[4] G6
+set_io axi_araddr[5] G7
+set_io axi_araddr[6] G8
+set_io axi_araddr[7] G9
+set_io axi_araddr[8] G10
+set_io axi_araddr[9] G11
+set_io axi_araddr[10] G12
+set_io axi_araddr[11] G13
+set_io axi_araddr[12] G14
+set_io axi_araddr[13] H1
+set_io axi_araddr[14] H2
+set_io axi_araddr[15] H3
+set_io axi_arvalid H4
+set_io axi_arready H5
+set_io axi_arprot[0] H6
+set_io axi_arprot[1] H7
+set_io axi_arprot[2] H8
+set_io axi_rdata[0] J1
+set_io axi_rdata[1] J2
+set_io axi_rdata[2] J4
+set_io axi_rdata[3] J5
+set_io axi_rdata[4] J6
+set_io axi_rdata[5] J7
+set_io axi_rdata[6] J8
+set_io axi_rdata[7] J9
+set_io axi_rdata[8] J10
+set_io axi_rdata[9] J11
+set_io axi_rdata[10] J12
+set_io axi_rdata[11] J13
+set_io axi_rdata[12] J14
+set_io axi_rdata[13] K1
+set_io axi_rdata[14] K2
+set_io axi_rdata[15] K3
+set_io axi_rdata[16] K4
+set_io axi_rdata[17] K5
+set_io axi_rdata[18] K6
+set_io axi_rdata[19] K7
+set_io axi_rdata[20] K8
+set_io axi_rdata[21] K9
+set_io axi_rdata[22] K10
+set_io axi_rdata[23] K12
+set_io axi_rdata[24] K13
+set_io axi_rdata[25] K14
+set_io axi_rdata[26] L1
+set_io axi_rdata[27] L2
+set_io axi_rdata[28] L3
+set_io axi_rdata[29] L4
+set_io axi_rdata[30] L5
+set_io axi_rdata[31] L6
+set_io axi_rresp[0] L7
+set_io axi_rresp[1] L8
+set_io axi_rvalid L9
+set_io axi_rready L10
+set_io mem_addr[0] M1
+set_io mem_addr[1] M2
+set_io mem_addr[2] M3
+set_io mem_addr[3] M4
+set_io mem_addr[4] M5
+set_io mem_addr[5] M6
+set_io mem_addr[6] M7
+set_io mem_addr[7] M8
+set_io mem_addr[8] M9
+set_io mem_addr[9] M10
+set_io mem_addr[10] M11
+set_io mem_addr[11] M12
+set_io mem_addr[12] M13
+set_io mem_addr[13] M14
+set_io mem_addr[14] N1
+set_io mem_addr[15] N2
+set_io mem_addr[16] N3
+set_io mem_addr[17] N4
+set_io mem_addr[18] N5
+set_io mem_addr[19] N6
+set_io mem_addr[20] N7
+set_io mem_addr[21] N8
+set_io mem_addr[22] N9
+set_io mem_addr[23] N10
+set_io mem_addr[24] N11
+set_io mem_addr[25] N12
+set_io mem_addr[26] N13
+set_io mem_addr[27] N14
+set_io mem_addr[28] P1
+set_io mem_addr[29] P2
+set_io mem_addr[30] P3
+set_io mem_addr[31] P4
+set_io mem_wdata[0] P5
+set_io mem_wdata[1] P6
+set_io mem_wdata[2] P7
+set_io mem_wdata[3] P8
+set_io mem_wdata[4] P9
+set_io mem_wdata[5] P10
+set_io mem_wdata[6] P11
+set_io mem_wdata[7] P12
+set_io mem_wdata[8] P13
+set_io mem_wdata[9] P14
+set_io mem_wdata[10] R1
+set_io mem_wdata[11] R2
+set_io mem_wdata[12] R3
+set_io mem_wdata[13] R4
+set_io mem_wdata[14] R5
+set_io mem_wdata[15] R6
+set_io mem_rdata[0] R7
+set_io mem_rdata[1] R8
+set_io mem_rdata[2] R9
+set_io mem_rdata[3] R10
+set_io mem_rdata[4] R11
+set_io mem_rdata[5] R12
+set_io mem_rdata[6] R13
+set_io mem_rdata[7] R14
+set_io mem_rdata[8] T1
+set_io mem_rdata[9] T2
+set_io mem_rdata[10] T3
+set_io mem_rdata[11] T4
+set_io mem_rdata[12] T5
+set_io mem_rdata[13] T6
+set_io mem_rdata[14] T7
+set_io mem_rdata[15] T8
+set_io mem_we T9
+set_io mem_oe T10
+set_io mem_ce T11
+set_io mem_ready T12
+set_io led_status[0] B7
+set_io led_status[1] B8
+set_io led_status[2] B9
+set_io led_status[3] B10
+set_io led_status[4] B11
+set_io led_status[5] B12
+set_io led_status[6] B13
+set_io led_status[7] B14
+set_io led_error B6
+set_io irq_out T13
+set_io -drive 12 axi_awready
+set_io -drive 12 axi_wready
+set_io -drive 12 axi_bvalid
+set_io -drive 12 axi_arready
+set_io -drive 12 axi_rvalid
+set_input_delay -clock clk 2.0 [get_ports axi_*]
+set_input_delay -clock clk 2.0 [get_ports mem_rdata*]
+set_input_delay -clock clk 2.0 [get_ports mem_ready]
+set_output_delay -clock clk 4.0 [get_ports axi_*]
+set_output_delay -clock clk 4.0 [get_ports mem_addr*]
+set_output_delay -clock clk 4.0 [get_ports mem_wdata*]
+set_output_delay -clock clk 4.0 [get_ports mem_we]
+set_output_delay -clock clk 4.0 [get_ports mem_oe]
+set_output_delay -clock clk 4.0 [get_ports mem_ce]
+set_multicycle_path -setup 4 -from [get_pins arbiter_*] -to [get_pins mem_*]
+set_multicycle_path -hold 3 -from [get_pins arbiter_*] -to [get_pins mem_*]
+set_multicycle_path -setup 8 -from [get_pins ssi_*] -to [get_pins mem_*]
+set_multicycle_path -hold 7 -from [get_pins ssi_*] -to [get_pins mem_*]
+set_max_delay -from [get_ports rst_n] -to [get_pins rst_sync_*] 20.0
+set_false_path -to [get_ports led_*]
+set_false_path -to [get_ports irq_out]
